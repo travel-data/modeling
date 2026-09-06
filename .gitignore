@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+
+# Generated model/data artifacts
+spot_embeddings.npy
+spots_with_embeddings.csv
+.huggingface/
+
