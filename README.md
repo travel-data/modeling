@@ -228,10 +228,5 @@ class CourseRecommender:
         pass
 ```
 
-## 📞 문의
-- 개발자: [Your Name]
-- 이메일: storixbiz@gmail.com
-- 프로젝트: OISO (경주 관광 추천 시스템)
-
 ## 📄 라이선스
 MIT License
