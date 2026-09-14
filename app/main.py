@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings
 from app.schemas import (
@@ -51,6 +52,12 @@ def create_app(
         version="0.1.0",
         description="Spring 백엔드가 호출하는 임베딩 기반 관광 코스 추천 서비스",
         lifespan=lifespan,
+    )
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(runtime_settings.cors_allowed_origins),
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
     )
 
     @application.exception_handler(RequestValidationError)

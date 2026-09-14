@@ -14,6 +14,7 @@ The recommendation flow is:
 
 from __future__ import annotations
 
+import logging
 from math import atan2, cos, radians, sin, sqrt
 from typing import Dict, List, Optional, Tuple
 import warnings
@@ -24,7 +25,11 @@ import requests
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from app.itinerary import ITINERARY_PLANS, required_day_categories
+from app.route_contract import build_route_request
+
 warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 
 
 class TourCourseRecommender:
@@ -36,13 +41,6 @@ class TourCourseRecommender:
         "ACCOMMODATION": 32,
     }
 
-    TRANSPORT_TO_API_MODE = {
-        "walk": "WALK_PUBLIC_TRANSIT",
-        "public": "WALK_PUBLIC_TRANSIT",
-        "bicycle": "BICYCLE",
-        "car": "CAR",
-    }
-
     def __init__(
         self,
         tour_data_path: Optional[str] = None,
@@ -51,7 +49,7 @@ class TourCourseRecommender:
         api_timeout: int = 10,
         api_page_size: int = 100,
         auth_cookie: Optional[str] = None,
-        use_route_api: bool = False,
+        use_route_api: bool = True,
     ):
         self.model = SentenceTransformer(model_name)
         self.api_base_url = api_base_url.rstrip("/") if api_base_url else None
@@ -59,6 +57,7 @@ class TourCourseRecommender:
         self.api_page_size = api_page_size
         self.use_route_api = use_route_api
         self.session = requests.Session()
+        self._route_cache: Dict[Tuple, Tuple[float, float]] = {}
 
         if auth_cookie:
             self.session.headers.update({"Cookie": auth_cookie})
@@ -162,6 +161,15 @@ class TourCourseRecommender:
         return pd.DataFrame(rows)
 
     def _preprocess_data(self):
+        if "category" not in self.df_tour.columns:
+            self.df_tour["category"] = self.df_tour["content_type_id"].apply(
+                lambda value: (
+                    "RESTAURANT"
+                    if int(value) == 39
+                    else "ACCOMMODATION" if int(value) == 32 else "TOUR_SPOT"
+                ),
+            )
+
         self.df_tour["overview"] = self.df_tour["overview"].fillna("")
         self.df_tour["name"] = self.df_tour["name"].fillna("")
         self.df_tour["text_for_embedding"] = self.df_tour.apply(
@@ -301,34 +309,55 @@ class TourCourseRecommender:
         if not self.use_route_api:
             return None
 
+        cache_key = (
+            round(start_lat, 6),
+            round(start_lon, 6),
+            round(end_lat, 6),
+            round(end_lon, 6),
+            transport,
+        )
+        if cache_key in self._route_cache:
+            return self._route_cache[cache_key]
+
         try:
             data = self._request(
                 "POST",
                 "/api/v1/routes/calculate",
-                json={
-                    "origin": {"latitude": start_lat, "longitude": start_lon},
-                    "destination": {"latitude": end_lat, "longitude": end_lon},
-                    "transportationMode": self.TRANSPORT_TO_API_MODE[transport],
-                },
+                json=build_route_request(
+                    start_lat,
+                    start_lon,
+                    end_lat,
+                    end_lon,
+                    transport,
+                ),
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Route API failed; using estimated travel time: %s", exc)
             return None
 
-        distance_meter = (
-            data.get("distanceMeter")
-            or data.get("distanceMeters")
-            or data.get("distance")
+        distance_meter = next(
+            (
+                data[key]
+                for key in ("distanceMeters", "distanceMeter", "distance")
+                if data.get(key) is not None
+            ),
+            None,
         )
-        duration_second = (
-            data.get("durationSecond")
-            or data.get("durationSeconds")
-            or data.get("duration")
+        duration_second = next(
+            (
+                data[key]
+                for key in ("durationSeconds", "durationSecond", "duration")
+                if data.get(key) is not None
+            ),
+            None,
         )
 
         if distance_meter is None or duration_second is None:
             return None
 
-        return float(distance_meter) / 1000, float(duration_second) / 60
+        result = float(distance_meter) / 1000, float(duration_second) / 60
+        self._route_cache[cache_key] = result
+        return result
 
     def _distance_and_travel_time(
         self,
@@ -348,77 +377,192 @@ class TourCourseRecommender:
         if api_result:
             return api_result
 
+        if self.use_route_api:
+            raise RuntimeError("The backend route API did not return a usable route.")
+
         distance = self._haversine_distance(start_lat, start_lon, end_lat, end_lon)
         return distance, self._estimate_travel_time(distance, transport)
 
-    def _greedy_tsp(
+    @staticmethod
+    def _minimum_remaining_minutes(categories: List[str]) -> int:
+        visit_minutes = {
+            "TOUR_SPOT": 45,
+            "RESTAURANT": 45,
+            "ACCOMMODATION": 30,
+        }
+        return sum(visit_minutes[category] + 5 for category in categories)
+
+    def _take_nearest_fitting(
+        self,
+        candidates: pd.DataFrame,
+        used_indices: set,
+        current_lat: float,
+        current_lon: float,
+        elapsed_minutes: float,
+        day_budget: int,
+        transport: str,
+        reserve_minutes: int = 0,
+    ) -> Optional[Tuple[int, pd.Series, float, float]]:
+        remaining = candidates.loc[~candidates.index.isin(used_indices)].copy()
+        if remaining.empty:
+            return None
+
+        remaining["straight_distance"] = remaining.apply(
+            lambda row: self._haversine_distance(
+                current_lat,
+                current_lon,
+                row["map_y"],
+                row["map_x"],
+            ),
+            axis=1,
+        )
+
+        for candidate_index, candidate in remaining.nsmallest(
+            min(8, len(remaining)),
+            "straight_distance",
+        ).iterrows():
+            try:
+                distance, travel_time = self._distance_and_travel_time(
+                    current_lat,
+                    current_lon,
+                    candidate["map_y"],
+                    candidate["map_x"],
+                    transport,
+                )
+            except RuntimeError:
+                continue
+            visit_time = int(candidate["visit_duration"])
+            projected = elapsed_minutes + travel_time + visit_time + reserve_minutes
+            if projected <= day_budget:
+                return candidate_index, candidate, distance, travel_time
+
+        return None
+
+    @staticmethod
+    def _to_course_item(
+        place: pd.Series,
+        distance: float,
+        travel_time: float,
+        day_number: int,
+        item_order: int,
+    ) -> Dict:
+        return {
+            "order": item_order,
+            "day_number": day_number,
+            "spot_id": (
+                int(place["spot_id"]) if pd.notna(place.get("spot_id")) else None
+            ),
+            "nearby_place_id": (
+                int(place["nearby_place_id"])
+                if pd.notna(place.get("nearby_place_id"))
+                else None
+            ),
+            "category": place.get("category", "TOUR_SPOT"),
+            "name": place["name"],
+            "distance_from_prev": float(distance),
+            "travel_time": float(travel_time),
+            "visit_duration": int(place["visit_duration"]),
+            "lat": float(place["map_y"]),
+            "lon": float(place["map_x"]),
+            "similarity": float(place["similarity"]),
+        }
+
+    def _build_itinerary(
         self,
         df_candidates: pd.DataFrame,
         start_lat: float,
         start_lon: float,
-        time_budget: int,
+        duration: str,
         transport: str,
     ) -> List[Dict]:
-        course = []
-        remaining = df_candidates.copy()
+        plan = ITINERARY_PLANS.get(duration, ITINERARY_PLANS["one_day"])
+        days = plan.days
+        restaurant_counts = plan.restaurant_counts
+        day_budget = self._get_time_budget(duration) // days
+
+        category_pools = {
+            category: df_candidates[df_candidates["category"] == category]
+            for category in ("TOUR_SPOT", "RESTAURANT", "ACCOMMODATION")
+        }
+        used_indices: set = set()
+        course: List[Dict] = []
         current_lat = start_lat
         current_lon = start_lon
-        total_time = 0
 
-        while len(remaining) > 0 and total_time < time_budget:
-            remaining["distance"] = remaining.apply(
-                lambda x: self._haversine_distance(
+        for day_index, restaurant_count in enumerate(restaurant_counts):
+            day_number = day_index + 1
+            include_accommodation = day_number < days
+            required_categories = required_day_categories(restaurant_count)
+
+            elapsed_minutes = 0.0
+            day_items: List[Dict] = []
+
+            for slot_index, category in enumerate(required_categories):
+                remaining_categories = required_categories[slot_index + 1 :]
+                if include_accommodation:
+                    remaining_categories = remaining_categories + ["ACCOMMODATION"]
+                reserve = self._minimum_remaining_minutes(
+                    remaining_categories,
+                )
+                selected = self._take_nearest_fitting(
+                    category_pools[category],
+                    used_indices,
                     current_lat,
                     current_lon,
-                    x["map_y"],
-                    x["map_x"],
-                ),
-                axis=1,
-            )
+                    elapsed_minutes,
+                    day_budget,
+                    transport,
+                    reserve,
+                )
+                if selected is None:
+                    raise ValueError(
+                        f"Unable to build day {day_number}: no fitting {category}",
+                    )
 
-            nearest_idx = remaining["distance"].idxmin()
-            nearest = remaining.loc[nearest_idx]
+                place_index, place, distance, travel_time = selected
+                item = self._to_course_item(
+                    place,
+                    distance,
+                    travel_time,
+                    day_number,
+                    len(day_items) + 1,
+                )
+                day_items.append(item)
+                used_indices.add(place_index)
+                elapsed_minutes += travel_time + item["visit_duration"]
+                current_lat = item["lat"]
+                current_lon = item["lon"]
 
-            distance, travel_time = self._distance_and_travel_time(
-                current_lat,
-                current_lon,
-                nearest["map_y"],
-                nearest["map_x"],
-                transport,
-            )
-            visit_time = nearest["visit_duration"]
+            if include_accommodation:
+                selected = self._take_nearest_fitting(
+                    category_pools["ACCOMMODATION"],
+                    used_indices,
+                    current_lat,
+                    current_lon,
+                    elapsed_minutes,
+                    day_budget,
+                    transport,
+                )
+                if selected is None:
+                    raise ValueError(
+                        f"Unable to build day {day_number}: no fitting ACCOMMODATION",
+                    )
 
-            if total_time + travel_time + visit_time > time_budget:
-                break
+                place_index, place, distance, travel_time = selected
+                item = self._to_course_item(
+                    place,
+                    distance,
+                    travel_time,
+                    day_number,
+                    len(day_items) + 1,
+                )
+                day_items.append(item)
+                used_indices.add(place_index)
+                elapsed_minutes += travel_time + item["visit_duration"]
+                current_lat = item["lat"]
+                current_lon = item["lon"]
 
-            course.append(
-                {
-                    "order": len(course) + 1,
-                    "spot_id": (
-                        int(nearest["spot_id"])
-                        if pd.notna(nearest.get("spot_id"))
-                        else None
-                    ),
-                    "nearby_place_id": (
-                        int(nearest["nearby_place_id"])
-                        if pd.notna(nearest.get("nearby_place_id"))
-                        else None
-                    ),
-                    "category": nearest.get("category", "TOUR_SPOT"),
-                    "name": nearest["name"],
-                    "distance_from_prev": float(distance),
-                    "travel_time": float(travel_time),
-                    "visit_duration": int(visit_time),
-                    "lat": float(nearest["map_y"]),
-                    "lon": float(nearest["map_x"]),
-                    "similarity": float(nearest["similarity"]),
-                },
-            )
-
-            total_time += travel_time + visit_time
-            current_lat = nearest["map_y"]
-            current_lon = nearest["map_x"]
-            remaining = remaining.drop(nearest_idx)
+            course.extend(day_items)
 
         return course
 
@@ -446,18 +590,27 @@ class TourCourseRecommender:
         self.df_valid["similarity"] = similarities
 
         df_filtered = self._filter_by_constraints(self.df_valid, with_pet, transport)
-        df_candidates = df_filtered.nlargest(top_k_candidates, "similarity").copy()
+        candidate_limit = max(top_k_candidates, 80)
+        candidate_frames = []
+        for category in ("TOUR_SPOT", "RESTAURANT", "ACCOMMODATION"):
+            category_places = df_filtered[df_filtered["category"] == category]
+            if not category_places.empty:
+                candidate_frames.append(
+                    category_places.nlargest(candidate_limit, "similarity"),
+                )
+        if not candidate_frames:
+            raise ValueError("No recommendation candidates are available.")
+        df_candidates = pd.concat(candidate_frames)
 
         if start_lat is None or start_lon is None:
             start_lat = df_candidates["map_y"].mean()
             start_lon = df_candidates["map_x"].mean()
 
-        time_budget = self._get_time_budget(duration)
-        course = self._greedy_tsp(
+        course = self._build_itinerary(
             df_candidates,
             start_lat,
             start_lon,
-            time_budget,
+            duration,
             transport,
         )
 
@@ -483,7 +636,7 @@ class TourCourseRecommender:
 if __name__ == "__main__":
     recommender = TourCourseRecommender(
         api_base_url="https://oiso.duckdns.org",
-        use_route_api=False,
+        use_route_api=True,
         # CSV fallback example:
         # tour_data_path="_TourSpot__202607062337.csv",
     )

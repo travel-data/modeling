@@ -39,6 +39,13 @@ def _read_optional(name: str) -> Optional[str]:
     return normalized or None
 
 
+def _read_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return tuple(item.strip().rstrip("/") for item in value.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     """Runtime settings loaded once when the application starts."""
@@ -50,6 +57,7 @@ class Settings:
     use_route_api: bool
     tour_data_path: Optional[str]
     backend_auth_cookie: Optional[str]
+    cors_allowed_origins: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -64,8 +72,15 @@ class Settings:
             ),
             api_timeout=_read_int("API_TIMEOUT", 10),
             api_page_size=_read_int("API_PAGE_SIZE", 100),
-            use_route_api=_read_bool("USE_ROUTE_API", False),
+            use_route_api=_read_bool("USE_ROUTE_API", True),
             tour_data_path=_read_optional("TOUR_DATA_PATH"),
             backend_auth_cookie=_read_optional("BACKEND_AUTH_COOKIE"),
+            cors_allowed_origins=_read_csv(
+                "CORS_ALLOWED_ORIGINS",
+                (
+                    "http://localhost:5173",
+                    "https://oiso-fe.vercel.app",
+                ),
+            ),
         )
 

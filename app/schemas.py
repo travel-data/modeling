@@ -77,7 +77,7 @@ class CourseRecommendationItem(ApiModel):
     )
     visit_duration_minute: int = Field(ge=0, alias="visitDurationMinute")
     similarity: float
-    transport_type: str = Field(alias="transportType")
+    transport_type: Optional[str] = Field(default=None, alias="transportType")
 
 
 class CourseRecommendationData(ApiModel):

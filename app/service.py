@@ -117,7 +117,9 @@ class RecommendationService:
         for place in course:
             # The current algorithm has no overnight/accommodation optimization.
             # This provisional day number only separates each 8-hour block.
-            day_number = int(elapsed_minutes // 480) + 1
+            day_number = int(
+                place.get("day_number", int(elapsed_minutes // 480) + 1),
+            )
             travel_minutes = float(place.get("travel_time", 0))
             visit_minutes = int(place.get("visit_duration", 0))
 
@@ -141,7 +143,11 @@ class RecommendationService:
                     ),
                     visit_duration_minute=max(0, visit_minutes),
                     similarity=float(place.get("similarity", 0)),
-                    transport_type=COURSE_TRANSPORT_MAP[transportation_mode],
+                    transport_type=(
+                        None
+                        if int(place["order"]) == 1
+                        else COURSE_TRANSPORT_MAP[transportation_mode]
+                    ),
                 ),
             )
             elapsed_minutes += travel_minutes + visit_minutes

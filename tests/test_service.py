@@ -72,6 +72,7 @@ def test_service_maps_backend_enums_and_result_units():
     assert result.items[0].distance_from_previous_meter == 1250
     assert result.items[0].duration_from_previous_second == 630
     assert result.items[0].day_number == 1
+    assert result.items[0].transport_type is None
     assert result.items[1].day_number == 2
     assert result.items[1].transport_type == "BIKE"
 

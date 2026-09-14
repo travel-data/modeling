@@ -113,3 +113,22 @@ def test_unknown_enum_is_rejected():
     assert response.status_code == 422
     assert response.json()["code"] == 4000
 
+
+def test_frontend_origin_can_call_recommendation_api():
+    app = create_app(recommendation_service=FakeRecommendationService())
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/api/v1/recommendations/courses",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == (
+        "http://localhost:5173"
+    )
+
