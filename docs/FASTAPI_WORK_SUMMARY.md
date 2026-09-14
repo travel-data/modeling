@@ -41,7 +41,6 @@ FastAPI는 추천 계산을 담당하고, 사용자 인증과 추천 결과의 D
   "travelCompanion": "PARTNER",
   "preferredTravelTheme": "NATURE_SCENERY",
   "transportationMode": "CAR",
-  "withPet": false,
   "latitude": 35.8562,
   "longitude": 129.2247
 }

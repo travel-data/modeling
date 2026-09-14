@@ -9,7 +9,6 @@ VALID_REQUEST = {
     "travelCompanion": "PARTNER",
     "preferredTravelTheme": "NATURE_SCENERY",
     "transportationMode": "CAR",
-    "withPet": False,
     "latitude": 35.8562,
     "longitude": 129.2247,
 }

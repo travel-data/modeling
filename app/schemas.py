@@ -47,7 +47,6 @@ class CourseRecommendationRequest(ApiModel):
         alias="preferredTravelTheme",
     )
     transportation_mode: TransportationMode = Field(alias="transportationMode")
-    with_pet: bool = Field(default=False, alias="withPet")
     latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     longitude: Optional[float] = Field(default=None, ge=-180, le=180)
 

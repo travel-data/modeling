@@ -50,7 +50,6 @@ def test_service_maps_backend_enums_and_result_units():
             "travelCompanion": "PARTNER",
             "preferredTravelTheme": "HISTORY_CULTURE",
             "transportationMode": "BICYCLE",
-            "withPet": True,
             "latitude": 35.8,
             "longitude": 129.2,
         },
@@ -63,7 +62,6 @@ def test_service_maps_backend_enums_and_result_units():
         "companions": "couple",
         "theme": "history",
         "transport": "bicycle",
-        "with_pet": True,
         "start_lat": 35.8,
         "start_lon": 129.2,
     }

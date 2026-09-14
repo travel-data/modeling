@@ -121,8 +121,6 @@ class TourCourseRecommender:
             "img": item.get("img") or item.get("imageUrl") or "",
             "content": item.get("content") or "",
             "address": item.get("address") or "",
-            "can_parking": item.get("canParking") or item.get("can_parking"),
-            "can_pet": item.get("canPet") or item.get("can_pet"),
             "crowd_level": item.get("crowdLevel") or item.get("crowd_level"),
             "overview": item.get("overview") or "",
             "homepage": item.get("homepage") or item.get("homepageUrl"),
@@ -244,11 +242,8 @@ class TourCourseRecommender:
 
     def _build_concept_text(
         self,
-        duration: str,
         companions: str,
         theme: str,
-        transport: str,
-        with_pet: bool = False,
     ) -> str:
         concept_map = {
             "companions": {
@@ -266,37 +261,10 @@ class TourCourseRecommender:
             },
         }
 
-        text = (
+        return (
             f"{concept_map['companions'][companions]} "
             f"{concept_map['theme'][theme]} 관광지"
         )
-
-        if with_pet:
-            text += " 반려동물과 함께 갈 수 있는"
-
-        return text
-
-    def _filter_by_constraints(
-        self,
-        df: pd.DataFrame,
-        with_pet: bool = False,
-        transport: str = "car",
-    ) -> pd.DataFrame:
-        filtered = df.copy()
-
-        if with_pet and "can_pet" in filtered.columns:
-            filtered = filtered[
-                (filtered["can_pet"] == "Y")
-                | (filtered["can_pet"] == True)
-                | (filtered["can_pet"].isna())
-            ]
-
-        if transport == "car" and "can_parking" in filtered.columns:
-            filtered["parking_priority"] = filtered["can_parking"].apply(
-                lambda x: 2 if x == "Y" or x is True else 1 if pd.isna(x) else 0,
-            )
-
-        return filtered
 
     def _calculate_route_with_api(
         self,
@@ -572,28 +540,20 @@ class TourCourseRecommender:
         companions: str = "alone",
         theme: str = "scenery",
         transport: str = "car",
-        with_pet: bool = False,
         start_lat: Optional[float] = None,
         start_lon: Optional[float] = None,
         top_k_candidates: int = 30,
     ) -> Tuple[List[Dict], str]:
-        concept_text = self._build_concept_text(
-            duration,
-            companions,
-            theme,
-            transport,
-            with_pet,
-        )
+        concept_text = self._build_concept_text(companions, theme)
         concept_embedding = self.model.encode([concept_text])
 
         similarities = cosine_similarity(concept_embedding, self.spot_embeddings)[0]
         self.df_valid["similarity"] = similarities
 
-        df_filtered = self._filter_by_constraints(self.df_valid, with_pet, transport)
         candidate_limit = max(top_k_candidates, 80)
         candidate_frames = []
         for category in ("TOUR_SPOT", "RESTAURANT", "ACCOMMODATION"):
-            category_places = df_filtered[df_filtered["category"] == category]
+            category_places = self.df_valid[self.df_valid["category"] == category]
             if not category_places.empty:
                 candidate_frames.append(
                     category_places.nlargest(candidate_limit, "similarity"),
@@ -646,7 +606,6 @@ if __name__ == "__main__":
         companions="couple",
         theme="scenery",
         transport="car",
-        with_pet=False,
     )
 
     print("\n=== Recommended Course ===")

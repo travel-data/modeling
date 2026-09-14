@@ -8,7 +8,7 @@
 
 ### 사용자 입력
 - **여행 기간**: 반나절 / 1일 / 1박2일
-- **동행인**: 혼자 / 가족 / 연인 / 친구 (+ 반려동물 유무)
+- **동행인**: 혼자 / 가족 / 연인 / 친구
 - **테마**: 경치 / 역사 / 문화 / 음식
 - **이동 수단**: 도보 / 대중교통 / 자차 / 자전거
 
@@ -29,11 +29,7 @@
 
 **사용 모델**: `jhgan/ko-sroberta-multitask` (한국어 특화)
 
-### 2단계: 제약조건 필터링
-- 반려동물 동반 가능 여부
-- 주차 가능 여부 (자차 선택 시)
-
-### 3단계: 경로 최적화 (Greedy TSP)
+### 2단계: 경로 최적화 (Greedy TSP)
 ```
 시작점 → 가장 가까운 미방문지 선택
 → 이동시간 + 체류시간 계산
@@ -41,7 +37,7 @@
 → 코스 완성
 ```
 
-### 4단계: 시간 관리
+### 3단계: 시간 관리
 - **반나절**: 4시간 (240분)
 - **1일**: 8시간 (480분)
 - **1박2일**: 16시간 (960분)
@@ -60,7 +56,6 @@
   - `spot_id`, `name`, `overview` (설명)
   - `map_x`, `map_y` (경도, 위도)
   - `content_type_id` (관광지 타입)
-  - `can_pet`, `can_parking`
 
 ### AccommodationDetail (숙박)
 - 총 330개 객실
@@ -90,7 +85,6 @@ course, concept = recommend_course(
     companions='couple',     # 'alone', 'family', 'couple', 'friends'
     theme='scenery',         # 'scenery', 'history', 'culture', 'food'
     transport='car',         # 'walk', 'bicycle', 'public', 'car'
-    with_pet=False,
     start_lat=35.83,         # 선택: 시작 위도
     start_lon=129.21         # 선택: 시작 경도
 )
@@ -102,7 +96,7 @@ course, concept = recommend_course(
 - **빠른 속도**: 임베딩 1회 생성 후 재사용
 - **의미적 매칭**: 단순 키워드가 아닌 문맥 기반
 - **실용적**: 실제 이동 시간 고려
-- **유연함**: 다양한 제약조건 처리
+- **유연함**: 기간·동행인·테마·이동수단 조합 처리
 
 ### 한계 ⚠️
 - Greedy 알고리즘 → 최적 경로 보장 안 됨
@@ -185,7 +179,6 @@ Request Body:
   "companions": "couple",
   "theme": "scenery",
   "transport": "car",
-  "with_pet": false,
   "start_location": {
     "lat": 35.83,
     "lon": 129.21

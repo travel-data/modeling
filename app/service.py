@@ -94,7 +94,6 @@ class RecommendationService:
                     else "general"
                 ),
                 transport=TRANSPORT_MAP[request.transportation_mode],
-                with_pet=request.with_pet,
                 start_lat=request.latitude,
                 start_lon=request.longitude,
             )
