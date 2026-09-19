@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from enum import Enum
 from typing import Generic, Optional, TypeVar
 
@@ -47,6 +48,22 @@ class CourseRecommendationRequest(ApiModel):
         alias="preferredTravelTheme",
     )
     transportation_mode: TransportationMode = Field(alias="transportationMode")
+    travel_start_date: date = Field(
+        default_factory=date.today,
+        alias="travelStartDate",
+    )
+    saved_spot_ids: list[int] = Field(
+        default_factory=list,
+        alias="savedSpotIds",
+    )
+    saved_nearby_place_ids: list[int] = Field(
+        default_factory=list,
+        alias="savedNearbyPlaceIds",
+    )
+    active_festival_spot_ids: list[int] = Field(
+        default_factory=list,
+        alias="activeFestivalSpotIds",
+    )
     latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     longitude: Optional[float] = Field(default=None, ge=-180, le=180)
 

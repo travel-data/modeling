@@ -1,3 +1,5 @@
+from datetime import date
+
 from app.schemas import CourseRecommendationRequest
 from app.service import RecommendationService
 
@@ -31,6 +33,7 @@ class FakeEngine:
                     "name": "둘째 장소",
                     "distance_from_prev": 2.0,
                     "travel_time": 20,
+                    "return_travel_time": 15,
                     "visit_duration": 60,
                     "lat": 35.2,
                     "lon": 129.2,
@@ -50,6 +53,10 @@ def test_service_maps_backend_enums_and_result_units():
             "travelCompanion": "PARTNER",
             "preferredTravelTheme": "HISTORY_CULTURE",
             "transportationMode": "BICYCLE",
+            "travelStartDate": "2026-10-09",
+            "savedSpotIds": [101],
+            "savedNearbyPlaceIds": [202],
+            "activeFestivalSpotIds": [303],
             "latitude": 35.8,
             "longitude": 129.2,
         },
@@ -64,9 +71,13 @@ def test_service_maps_backend_enums_and_result_units():
         "transport": "bicycle",
         "start_lat": 35.8,
         "start_lon": 129.2,
+        "travel_start_date": date(2026, 10, 9),
+        "saved_spot_ids": {101},
+        "saved_nearby_place_ids": {202},
+        "active_festival_spot_ids": {303},
     }
     assert result.total_spot_count == 2
-    assert result.total_duration_minute == 561
+    assert result.total_duration_minute == 576
     assert result.items[0].distance_from_previous_meter == 1250
     assert result.items[0].duration_from_previous_second == 630
     assert result.items[0].day_number == 1
@@ -90,4 +101,7 @@ def test_service_uses_general_theme_when_theme_is_missing():
     service.recommend(request)
 
     assert engine.received["theme"] == "general"
+    assert engine.received["saved_spot_ids"] == set()
+    assert engine.received["saved_nearby_place_ids"] == set()
+    assert engine.received["active_festival_spot_ids"] == set()
 
