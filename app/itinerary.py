@@ -38,9 +38,37 @@ def required_day_categories(restaurant_count: int) -> list[str]:
 def planned_item_count(duration: str) -> int:
     """Return the exact number of places produced by the itinerary rules."""
     plan = ITINERARY_PLANS[duration]
-    day_items = sum(
+    return sum(
         len(required_day_categories(restaurant_count))
         for restaurant_count in plan.restaurant_counts
     )
-    accommodations = max(plan.days - 1, 0)
-    return day_items + accommodations
+
+
+def day_starts_at_departure(day_index: int, departure_type: str) -> bool:
+    return day_index == 0 or departure_type == "accommodation"
+
+
+def classify_departure(
+    nearest_accommodation_distance_km: float | None,
+    match_radius_km: float,
+) -> str:
+    if (
+        nearest_accommodation_distance_km is not None
+        and nearest_accommodation_distance_km <= match_radius_km
+    ):
+        return "accommodation"
+    return "start_point"
+
+
+def is_trip_return_slot(
+    day_number: int,
+    total_days: int,
+    slot_index: int,
+    slot_count: int,
+    departure_type: str,
+) -> bool:
+    return (
+        departure_type == "start_point"
+        and day_number == total_days
+        and slot_index == slot_count - 1
+    )

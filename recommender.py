@@ -14,8 +14,9 @@ The recommendation flow is:
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 import logging
-from math import atan2, cos, radians, sin, sqrt
+from math import atan2, cos, exp, radians, sin, sqrt
 from typing import Dict, List, Optional, Tuple
 import warnings
 
@@ -25,7 +26,14 @@ import requests
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from app.itinerary import ITINERARY_PLANS, required_day_categories
+from app.availability import is_closed_on
+from app.itinerary import (
+    ITINERARY_PLANS,
+    classify_departure,
+    day_starts_at_departure,
+    is_trip_return_slot,
+    required_day_categories,
+)
 from app.route_contract import build_route_request
 
 warnings.filterwarnings("ignore")
@@ -34,6 +42,21 @@ logger = logging.getLogger(__name__)
 
 class TourCourseRecommender:
     """Hybrid recommender: semantic matching + rule filters + greedy routing."""
+
+    ACCOMMODATION_MATCH_RADIUS_KM = 0.05
+    THEME_WEIGHT = 0.50
+    SAVED_WEIGHT = 0.20
+    COMPANION_WEIGHT = 0.10
+    FESTIVAL_WEIGHT = 0.10
+    ROUTE_WEIGHT = 0.10
+    ROUTE_SCORE_SCALE_MINUTES = 30
+    ROUTE_SCORING_CANDIDATES = 16
+    MAX_SAVED_TRAVEL_MINUTES = 30
+    PRESET_DEPARTURES = {
+        "GYEONGJU_STATION": (35.7982, 129.1387),
+        "GYEONGJU_INTERCITY_BUS_TERMINAL": (35.8400, 129.2036),
+        "GYEONGJU_EXPRESS_BUS_TERMINAL": (35.8393, 129.2051),
+    }
 
     CATEGORY_TO_CONTENT_TYPE = {
         "TOUR_SPOT": 12,
@@ -58,6 +81,7 @@ class TourCourseRecommender:
         self.use_route_api = use_route_api
         self.session = requests.Session()
         self._route_cache: Dict[Tuple, Tuple[float, float]] = {}
+        self._rest_date_cache: Dict[int, Optional[str]] = {}
 
         if auth_cookie:
             self.session.headers.update({"Cookie": auth_cookie})
@@ -122,6 +146,8 @@ class TourCourseRecommender:
             "content": item.get("content") or "",
             "address": item.get("address") or "",
             "crowd_level": item.get("crowdLevel") or item.get("crowd_level"),
+            "rest_date": item.get("restDate") or item.get("rest_date"),
+            "open_time": item.get("openTime") or item.get("open_time"),
             "overview": item.get("overview") or "",
             "homepage": item.get("homepage") or item.get("homepageUrl"),
             "map_x": item.get("longitude") or item.get("mapX") or item.get("map_x"),
@@ -170,6 +196,12 @@ class TourCourseRecommender:
 
         self.df_tour["overview"] = self.df_tour["overview"].fillna("")
         self.df_tour["name"] = self.df_tour["name"].fillna("")
+        if "spot_id" not in self.df_tour.columns:
+            self.df_tour["spot_id"] = None
+        if "nearby_place_id" not in self.df_tour.columns:
+            self.df_tour["nearby_place_id"] = None
+        if "rest_date" not in self.df_tour.columns:
+            self.df_tour["rest_date"] = None
         self.df_tour["text_for_embedding"] = self.df_tour.apply(
             lambda x: f"{x['name']} {x['overview']}".strip(),
             axis=1,
@@ -240,6 +272,61 @@ class TourCourseRecommender:
         }
         return budgets.get(duration_type, 480)
 
+    def _infer_departure_type(self, latitude: float, longitude: float) -> str:
+        accommodations = self.df_valid[
+            self.df_valid["category"] == "ACCOMMODATION"
+        ]
+        if accommodations.empty:
+            return "start_point"
+
+        nearest_distance = min(
+            self._haversine_distance(
+                latitude,
+                longitude,
+                row["map_y"],
+                row["map_x"],
+            )
+            for _, row in accommodations.iterrows()
+        )
+        return classify_departure(
+            nearest_distance,
+            self.ACCOMMODATION_MATCH_RADIUS_KM,
+        )
+
+    def _resolve_departure(
+        self,
+        category: str,
+        place_id: str,
+    ) -> Tuple[float, float, str]:
+        if category == "PRESET":
+            coordinates = self.PRESET_DEPARTURES.get(place_id)
+            if coordinates is None:
+                raise ValueError(f"Unknown preset departure: {place_id}")
+            return coordinates[0], coordinates[1], "start_point"
+
+        try:
+            numeric_id = int(place_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Departure place ID must be numeric.") from exc
+
+        if category == "TOUR_SPOT":
+            identifiers = pd.to_numeric(self.df_valid["spot_id"], errors="coerce")
+        elif category == "ACCOMMODATION":
+            identifiers = pd.to_numeric(
+                self.df_valid["nearby_place_id"],
+                errors="coerce",
+            )
+        else:
+            raise ValueError(f"Unsupported departure category: {category}")
+
+        matches = self.df_valid[identifiers.eq(numeric_id)]
+        if matches.empty:
+            raise ValueError(f"Unknown departure place: {category}:{place_id}")
+
+        place = matches.iloc[0]
+        departure_type = "accommodation" if category == "ACCOMMODATION" else "start_point"
+        return float(place["map_y"]), float(place["map_x"]), departure_type
+
     def _build_concept_text(
         self,
         companions: str,
@@ -266,6 +353,27 @@ class TourCourseRecommender:
             f"{concept_map['theme'][theme]} 관광지"
         )
 
+    @staticmethod
+    def _build_companion_text(companions: str) -> str:
+        companion_map = {
+            "alone": "혼자 여행하기 좋은 장소",
+            "family": "가족과 함께 즐기기 좋은 장소",
+            "couple": "연인과 데이트하기 좋은 장소",
+            "friends": "친구들과 방문하기 좋은 장소",
+        }
+        return companion_map[companions]
+
+    @staticmethod
+    def _build_theme_text(theme: str) -> str:
+        theme_map = {
+            "general": "다양한 볼거리와 즐길 거리가 있는 장소",
+            "scenery": "아름다운 경치와 자연을 감상할 수 있는 장소",
+            "history": "역사와 문화유산을 체험할 수 있는 장소",
+            "culture": "전통 문화와 예술을 즐길 수 있는 장소",
+            "food": "맛있는 음식과 먹거리를 즐길 수 있는 장소",
+        }
+        return theme_map[theme]
+
     def _calculate_route_with_api(
         self,
         start_lat: float,
@@ -290,7 +398,7 @@ class TourCourseRecommender:
         try:
             data = self._request(
                 "POST",
-                "/api/v1/routes/calculate",
+                "/internal/routes/calculate",
                 json=build_route_request(
                     start_lat,
                     start_lon,
@@ -345,18 +453,43 @@ class TourCourseRecommender:
         if api_result:
             return api_result
 
-        if self.use_route_api:
-            raise RuntimeError("The backend route API did not return a usable route.")
-
         distance = self._haversine_distance(start_lat, start_lon, end_lat, end_lon)
         return distance, self._estimate_travel_time(distance, transport)
+
+    def _load_rest_date(self, candidate: pd.Series) -> Optional[str]:
+        rest_date = candidate.get("rest_date")
+        if pd.notna(rest_date) and str(rest_date).strip():
+            return str(rest_date).strip()
+
+        nearby_place_id = candidate.get("nearby_place_id")
+        if pd.isna(nearby_place_id) or not self.api_base_url:
+            return None
+
+        place_id = int(nearby_place_id)
+        if place_id in self._rest_date_cache:
+            return self._rest_date_cache[place_id]
+
+        try:
+            detail = self._request("GET", f"/api/v1/nearby-places/{place_id}")
+            value = detail.get("restDate") or detail.get("rest_date")
+            normalized = str(value).strip() if value else None
+        except Exception as exc:
+            logger.warning("Could not load rest date for place %s: %s", place_id, exc)
+            normalized = None
+
+        self._rest_date_cache[place_id] = normalized
+        return normalized
+
+    def _is_available_on(self, candidate: pd.Series, visit_date: date) -> bool:
+        if candidate.get("category") != "RESTAURANT":
+            return True
+        return not is_closed_on(self._load_rest_date(candidate), visit_date)
 
     @staticmethod
     def _minimum_remaining_minutes(categories: List[str]) -> int:
         visit_minutes = {
             "TOUR_SPOT": 45,
             "RESTAURANT": 45,
-            "ACCOMMODATION": 30,
         }
         return sum(visit_minutes[category] + 5 for category in categories)
 
@@ -369,7 +502,9 @@ class TourCourseRecommender:
         elapsed_minutes: float,
         day_budget: int,
         transport: str,
+        visit_date: date,
         reserve_minutes: int = 0,
+        return_to: Optional[Tuple[float, float]] = None,
     ) -> Optional[Tuple[int, pd.Series, float, float]]:
         remaining = candidates.loc[~candidates.index.isin(used_indices)].copy()
         if remaining.empty:
@@ -385,10 +520,26 @@ class TourCourseRecommender:
             axis=1,
         )
 
-        for candidate_index, candidate in remaining.nsmallest(
+        score_candidates = remaining.nlargest(
+            min(self.ROUTE_SCORING_CANDIDATES, len(remaining)),
+            "base_score",
+        )
+        nearest_candidates = remaining.nsmallest(
             min(8, len(remaining)),
             "straight_distance",
-        ).iterrows():
+        )
+        priority_candidates = remaining[
+            remaining["is_saved"] | remaining["is_active_festival"]
+        ].nlargest(self.ROUTE_SCORING_CANDIDATES, "base_score")
+        ranked_candidates = pd.concat(
+            [score_candidates, nearest_candidates, priority_candidates],
+        )
+        ranked_candidates = ranked_candidates.loc[
+            ~ranked_candidates.index.duplicated(keep="first")
+        ]
+
+        fitting_candidates = []
+        for candidate_index, candidate in ranked_candidates.iterrows():
             try:
                 distance, travel_time = self._distance_and_travel_time(
                     current_lat,
@@ -400,8 +551,48 @@ class TourCourseRecommender:
             except RuntimeError:
                 continue
             visit_time = int(candidate["visit_duration"])
-            projected = elapsed_minutes + travel_time + visit_time + reserve_minutes
+            return_time = 0.0
+            if return_to is not None:
+                try:
+                    _, return_time = self._distance_and_travel_time(
+                        candidate["map_y"],
+                        candidate["map_x"],
+                        return_to[0],
+                        return_to[1],
+                        transport,
+                    )
+                except RuntimeError:
+                    continue
+            projected = (
+                elapsed_minutes
+                + travel_time
+                + visit_time
+                + reserve_minutes
+                + return_time
+            )
             if projected <= day_budget:
+                route_score = exp(-travel_time / self.ROUTE_SCORE_SCALE_MINUTES)
+                saved_score = (
+                    self.SAVED_WEIGHT
+                    if bool(candidate["is_saved"])
+                    and travel_time <= self.MAX_SAVED_TRAVEL_MINUTES
+                    else 0.0
+                )
+                final_score = (
+                    float(candidate["base_score"])
+                    + saved_score
+                    + self.ROUTE_WEIGHT * route_score
+                )
+                fitting_candidates.append(
+                    (final_score, candidate_index, candidate, distance, travel_time),
+                )
+
+        for _, candidate_index, candidate, distance, travel_time in sorted(
+            fitting_candidates,
+            key=lambda item: item[0],
+            reverse=True,
+        ):
+            if self._is_available_on(candidate, visit_date):
                 return candidate_index, candidate, distance, travel_time
 
         return None
@@ -442,6 +633,8 @@ class TourCourseRecommender:
         start_lon: float,
         duration: str,
         transport: str,
+        departure_type: str,
+        travel_start_date: date,
     ) -> List[Dict]:
         plan = ITINERARY_PLANS.get(duration, ITINERARY_PLANS["one_day"])
         days = plan.days
@@ -450,7 +643,7 @@ class TourCourseRecommender:
 
         category_pools = {
             category: df_candidates[df_candidates["category"] == category]
-            for category in ("TOUR_SPOT", "RESTAURANT", "ACCOMMODATION")
+            for category in ("TOUR_SPOT", "RESTAURANT")
         }
         used_indices: set = set()
         course: List[Dict] = []
@@ -459,18 +652,32 @@ class TourCourseRecommender:
 
         for day_index, restaurant_count in enumerate(restaurant_counts):
             day_number = day_index + 1
-            include_accommodation = day_number < days
+            visit_date = travel_start_date + timedelta(days=day_index)
             required_categories = required_day_categories(restaurant_count)
+
+            if day_starts_at_departure(day_index, departure_type):
+                current_lat = start_lat
+                current_lon = start_lon
 
             elapsed_minutes = 0.0
             day_items: List[Dict] = []
 
             for slot_index, category in enumerate(required_categories):
                 remaining_categories = required_categories[slot_index + 1 :]
-                if include_accommodation:
-                    remaining_categories = remaining_categories + ["ACCOMMODATION"]
                 reserve = self._minimum_remaining_minutes(
                     remaining_categories,
+                )
+                should_return = is_trip_return_slot(
+                    day_number,
+                    days,
+                    slot_index,
+                    len(required_categories),
+                    departure_type,
+                )
+                return_to = (
+                    (start_lat, start_lon)
+                    if should_return
+                    else None
                 )
                 selected = self._take_nearest_fitting(
                     category_pools[category],
@@ -480,7 +687,9 @@ class TourCourseRecommender:
                     elapsed_minutes,
                     day_budget,
                     transport,
+                    visit_date,
                     reserve,
+                    return_to,
                 )
                 if selected is None:
                     raise ValueError(
@@ -501,34 +710,22 @@ class TourCourseRecommender:
                 current_lat = item["lat"]
                 current_lon = item["lon"]
 
-            if include_accommodation:
-                selected = self._take_nearest_fitting(
-                    category_pools["ACCOMMODATION"],
-                    used_indices,
+            if is_trip_return_slot(
+                day_number,
+                days,
+                len(required_categories) - 1,
+                len(required_categories),
+                departure_type,
+            ):
+                return_distance, return_time = self._distance_and_travel_time(
                     current_lat,
                     current_lon,
-                    elapsed_minutes,
-                    day_budget,
+                    start_lat,
+                    start_lon,
                     transport,
                 )
-                if selected is None:
-                    raise ValueError(
-                        f"Unable to build day {day_number}: no fitting ACCOMMODATION",
-                    )
-
-                place_index, place, distance, travel_time = selected
-                item = self._to_course_item(
-                    place,
-                    distance,
-                    travel_time,
-                    day_number,
-                    len(day_items) + 1,
-                )
-                day_items.append(item)
-                used_indices.add(place_index)
-                elapsed_minutes += travel_time + item["visit_duration"]
-                current_lat = item["lat"]
-                current_lon = item["lon"]
+                day_items[-1]["return_distance"] = float(return_distance)
+                day_items[-1]["return_travel_time"] = float(return_time)
 
             course.extend(day_items)
 
@@ -540,31 +737,96 @@ class TourCourseRecommender:
         companions: str = "alone",
         theme: str = "scenery",
         transport: str = "car",
-        start_lat: Optional[float] = None,
-        start_lon: Optional[float] = None,
+        departure_category: Optional[str] = None,
+        departure_place_id: Optional[str] = None,
         top_k_candidates: int = 30,
+        travel_start_date: Optional[date] = None,
+        saved_spot_ids: Optional[set[int]] = None,
+        saved_nearby_place_ids: Optional[set[int]] = None,
+        active_festival_spot_ids: Optional[set[int]] = None,
     ) -> Tuple[List[Dict], str]:
         concept_text = self._build_concept_text(companions, theme)
-        concept_embedding = self.model.encode([concept_text])
+        theme_text = self._build_theme_text(theme)
+        companion_text = self._build_companion_text(companions)
+        theme_embedding, companion_embedding = self.model.encode(
+            [theme_text, companion_text],
+        )
 
-        similarities = cosine_similarity(concept_embedding, self.spot_embeddings)[0]
-        self.df_valid["similarity"] = similarities
+        theme_similarities = cosine_similarity(
+            [theme_embedding],
+            self.spot_embeddings,
+        )[0]
+        companion_similarities = cosine_similarity(
+            [companion_embedding],
+            self.spot_embeddings,
+        )[0]
+        self.df_valid["theme_similarity"] = theme_similarities
+        self.df_valid["companion_similarity"] = companion_similarities
+        self.df_valid["similarity"] = theme_similarities
+
+        saved_spot_ids = saved_spot_ids or set()
+        saved_nearby_place_ids = saved_nearby_place_ids or set()
+        active_festival_spot_ids = active_festival_spot_ids or set()
+        spot_ids = pd.to_numeric(self.df_valid["spot_id"], errors="coerce")
+        nearby_place_ids = pd.to_numeric(
+            self.df_valid["nearby_place_id"],
+            errors="coerce",
+        )
+        self.df_valid["is_saved"] = (
+            spot_ids.isin(saved_spot_ids)
+            | nearby_place_ids.isin(saved_nearby_place_ids)
+        )
+        self.df_valid["is_active_festival"] = spot_ids.isin(
+            active_festival_spot_ids,
+        )
+        content_type_ids = pd.to_numeric(
+            self.df_valid["content_type_id"],
+            errors="coerce",
+        )
+        self.df_valid["is_festival"] = content_type_ids.eq(15)
+        normalized_theme = np.clip((theme_similarities + 1) / 2, 0, 1)
+        normalized_companion = np.clip((companion_similarities + 1) / 2, 0, 1)
+        self.df_valid["base_score"] = (
+            self.THEME_WEIGHT * normalized_theme
+            + self.COMPANION_WEIGHT * normalized_companion
+            + self.FESTIVAL_WEIGHT
+            * self.df_valid["is_active_festival"].astype(float)
+        )
 
         candidate_limit = max(top_k_candidates, 80)
         candidate_frames = []
-        for category in ("TOUR_SPOT", "RESTAURANT", "ACCOMMODATION"):
-            category_places = self.df_valid[self.df_valid["category"] == category]
+        for category in ("TOUR_SPOT", "RESTAURANT"):
+            category_places = self.df_valid[
+                (self.df_valid["category"] == category)
+                & (
+                    ~self.df_valid["is_festival"]
+                    | self.df_valid["is_active_festival"]
+                )
+            ]
             if not category_places.empty:
+                ranked = category_places.nlargest(candidate_limit, "base_score")
+                priority = category_places[
+                    category_places["is_saved"]
+                    | category_places["is_active_festival"]
+                ]
                 candidate_frames.append(
-                    category_places.nlargest(candidate_limit, "similarity"),
+                    pd.concat([ranked, priority]).loc[
+                        lambda frame: ~frame.index.duplicated(keep="first")
+                    ],
                 )
         if not candidate_frames:
             raise ValueError("No recommendation candidates are available.")
         df_candidates = pd.concat(candidate_frames)
 
-        if start_lat is None or start_lon is None:
+        if departure_category is None or departure_place_id is None:
             start_lat = df_candidates["map_y"].mean()
             start_lon = df_candidates["map_x"].mean()
+            departure_type = "start_point"
+        else:
+            start_lat, start_lon, departure_type = self._resolve_departure(
+                departure_category,
+                departure_place_id,
+            )
 
         course = self._build_itinerary(
             df_candidates,
@@ -572,6 +834,8 @@ class TourCourseRecommender:
             start_lon,
             duration,
             transport,
+            departure_type,
+            travel_start_date or date.today(),
         )
 
         return course, concept_text

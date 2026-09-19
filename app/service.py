@@ -94,8 +94,16 @@ class RecommendationService:
                     else "general"
                 ),
                 transport=TRANSPORT_MAP[request.transportation_mode],
-                start_lat=request.latitude,
-                start_lon=request.longitude,
+                departure_category=(
+                    request.departure_category.value
+                    if request.departure_category is not None
+                    else None
+                ),
+                departure_place_id=request.departure_place_id,
+                travel_start_date=request.travel_start_date,
+                saved_spot_ids=set(request.saved_spot_ids),
+                saved_nearby_place_ids=set(request.saved_nearby_place_ids),
+                active_festival_spot_ids=set(request.active_festival_spot_ids),
             )
 
         return self._to_response(
@@ -114,12 +122,13 @@ class RecommendationService:
         elapsed_minutes = 0.0
 
         for place in course:
-            # The current algorithm has no overnight/accommodation optimization.
-            # This provisional day number only separates each 8-hour block.
+            # New itinerary results include a day number. The elapsed-time
+            # fallback keeps older engine results compatible.
             day_number = int(
                 place.get("day_number", int(elapsed_minutes // 480) + 1),
             )
             travel_minutes = float(place.get("travel_time", 0))
+            return_minutes = float(place.get("return_travel_time", 0))
             visit_minutes = int(place.get("visit_duration", 0))
 
             items.append(
@@ -149,7 +158,7 @@ class RecommendationService:
                     ),
                 ),
             )
-            elapsed_minutes += travel_minutes + visit_minutes
+            elapsed_minutes += travel_minutes + visit_minutes + return_minutes
 
         return CourseRecommendationData(
             concept=concept,
