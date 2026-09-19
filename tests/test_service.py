@@ -57,8 +57,8 @@ def test_service_maps_backend_enums_and_result_units():
             "savedSpotIds": [101],
             "savedNearbyPlaceIds": [202],
             "activeFestivalSpotIds": [303],
-            "latitude": 35.8,
-            "longitude": 129.2,
+            "departureCategory": "PRESET",
+            "departurePlaceId": "GYEONGJU_STATION",
         },
     )
 
@@ -69,8 +69,8 @@ def test_service_maps_backend_enums_and_result_units():
         "companions": "couple",
         "theme": "history",
         "transport": "bicycle",
-        "start_lat": 35.8,
-        "start_lon": 129.2,
+        "departure_category": "PRESET",
+        "departure_place_id": "GYEONGJU_STATION",
         "travel_start_date": date(2026, 10, 9),
         "saved_spot_ids": {101},
         "saved_nearby_place_ids": {202},
@@ -104,4 +104,6 @@ def test_service_uses_general_theme_when_theme_is_missing():
     assert engine.received["saved_spot_ids"] == set()
     assert engine.received["saved_nearby_place_ids"] == set()
     assert engine.received["active_festival_spot_ids"] == set()
+    assert engine.received["departure_category"] is None
+    assert engine.received["departure_place_id"] is None
 

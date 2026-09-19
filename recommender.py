@@ -52,6 +52,11 @@ class TourCourseRecommender:
     ROUTE_SCORE_SCALE_MINUTES = 30
     ROUTE_SCORING_CANDIDATES = 16
     MAX_SAVED_TRAVEL_MINUTES = 30
+    PRESET_DEPARTURES = {
+        "GYEONGJU_STATION": (35.7982, 129.1387),
+        "GYEONGJU_INTERCITY_BUS_TERMINAL": (35.8400, 129.2036),
+        "GYEONGJU_EXPRESS_BUS_TERMINAL": (35.8393, 129.2051),
+    }
 
     CATEGORY_TO_CONTENT_TYPE = {
         "TOUR_SPOT": 12,
@@ -288,6 +293,40 @@ class TourCourseRecommender:
             self.ACCOMMODATION_MATCH_RADIUS_KM,
         )
 
+    def _resolve_departure(
+        self,
+        category: str,
+        place_id: str,
+    ) -> Tuple[float, float, str]:
+        if category == "PRESET":
+            coordinates = self.PRESET_DEPARTURES.get(place_id)
+            if coordinates is None:
+                raise ValueError(f"Unknown preset departure: {place_id}")
+            return coordinates[0], coordinates[1], "start_point"
+
+        try:
+            numeric_id = int(place_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Departure place ID must be numeric.") from exc
+
+        if category == "TOUR_SPOT":
+            identifiers = pd.to_numeric(self.df_valid["spot_id"], errors="coerce")
+        elif category == "ACCOMMODATION":
+            identifiers = pd.to_numeric(
+                self.df_valid["nearby_place_id"],
+                errors="coerce",
+            )
+        else:
+            raise ValueError(f"Unsupported departure category: {category}")
+
+        matches = self.df_valid[identifiers.eq(numeric_id)]
+        if matches.empty:
+            raise ValueError(f"Unknown departure place: {category}:{place_id}")
+
+        place = matches.iloc[0]
+        departure_type = "accommodation" if category == "ACCOMMODATION" else "start_point"
+        return float(place["map_y"]), float(place["map_x"]), departure_type
+
     def _build_concept_text(
         self,
         companions: str,
@@ -359,7 +398,7 @@ class TourCourseRecommender:
         try:
             data = self._request(
                 "POST",
-                "/api/v1/routes/calculate",
+                "/internal/routes/calculate",
                 json=build_route_request(
                     start_lat,
                     start_lon,
@@ -698,8 +737,8 @@ class TourCourseRecommender:
         companions: str = "alone",
         theme: str = "scenery",
         transport: str = "car",
-        start_lat: Optional[float] = None,
-        start_lon: Optional[float] = None,
+        departure_category: Optional[str] = None,
+        departure_place_id: Optional[str] = None,
         top_k_candidates: int = 30,
         travel_start_date: Optional[date] = None,
         saved_spot_ids: Optional[set[int]] = None,
@@ -779,13 +818,15 @@ class TourCourseRecommender:
             raise ValueError("No recommendation candidates are available.")
         df_candidates = pd.concat(candidate_frames)
 
-        has_explicit_departure = start_lat is not None and start_lon is not None
-        if not has_explicit_departure:
+        if departure_category is None or departure_place_id is None:
             start_lat = df_candidates["map_y"].mean()
             start_lon = df_candidates["map_x"].mean()
             departure_type = "start_point"
         else:
-            departure_type = self._infer_departure_type(start_lat, start_lon)
+            start_lat, start_lon, departure_type = self._resolve_departure(
+                departure_category,
+                departure_place_id,
+            )
 
         course = self._build_itinerary(
             df_candidates,

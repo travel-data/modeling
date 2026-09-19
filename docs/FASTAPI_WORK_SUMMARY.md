@@ -2,7 +2,7 @@
 
 ## 1. 작업 목적
 
-프론트에서 받은 여행 기간, 동행 유형, 선호 테마, 이동 수단과 출발 좌표를 이용해 임베딩 기반 관광 코스를 계산하는 Python 서비스를 만들었다.
+프론트에서 받은 여행 기간, 동행 유형, 선호 테마, 이동 수단과 내부 출발 장소 ID를 이용해 임베딩 기반 관광 코스를 계산하는 Python 서비스를 만들었다.
 
 권장 호출 구조는 다음과 같다.
 
@@ -21,7 +21,7 @@ FastAPI는 추천 계산을 담당하고, 사용자 인증과 추천 결과의 D
 - 동시에 들어온 요청이 추천기의 공용 DataFrame을 덮어쓰지 않도록 추천 실행 구간 잠금 처리
 - 프론트/Spring enum과 Python 알고리즘 내부 값 간 변환 처리
 - 프론트에서 허용하는 `preferredTravelTheme: null` 처리
-- 위도와 경도 중 하나만 전달되는 잘못된 요청 검증
+- 출발 장소 유형과 ID 중 하나만 전달되는 잘못된 요청 검증
 - 응답의 거리 단위를 km에서 m로, 이동 시간을 분에서 초로 변환
 - liveness/readiness API 추가
 - Dockerfile, 환경변수 예시, GitHub Actions CI 추가
@@ -41,12 +41,12 @@ FastAPI는 추천 계산을 담당하고, 사용자 인증과 추천 결과의 D
   "travelCompanion": "PARTNER",
   "preferredTravelTheme": "NATURE_SCENERY",
   "transportationMode": "CAR",
-  "latitude": 35.8562,
-  "longitude": 129.2247
+  "departureCategory": "PRESET",
+  "departurePlaceId": "GYEONGJU_STATION"
 }
 ```
 
-`latitude`와 `longitude`는 둘 다 보내거나 둘 다 생략해야 한다. 둘 다 생략하면 추천 후보 좌표의 중심을 출발점으로 사용한다. 입력 좌표가 숙소 데이터 좌표 50m 이내이면 매일 해당 좌표에서 시작하고, 그 외에는 전체 일정이 해당 좌표에서 시작해 해당 좌표로 돌아오도록 복귀 이동 시간을 반영한다.
+`departureCategory`와 `departurePlaceId`는 둘 다 보내거나 둘 다 생략해야 한다. `PRESET`은 등록된 교통 거점 코드를, `TOUR_SPOT`과 `ACCOMMODATION`은 백엔드 내부 장소 ID를 사용한다. 둘 다 생략하면 추천 후보 좌표의 중심을 출발점으로 사용한다. 숙소를 선택하면 매일 해당 숙소에서 시작하고, 교통 거점이나 관광지를 선택하면 전체 일정이 해당 장소에서 시작해 해당 장소로 돌아오도록 복귀 이동 시간을 반영한다.
 
 응답 예시:
 

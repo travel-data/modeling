@@ -87,8 +87,8 @@ course, concept = recommender.recommend(
     companions='couple',     # 'alone', 'family', 'couple', 'friends'
     theme='scenery',         # 'scenery', 'history', 'culture', 'food'
     transport='car',         # 'walk', 'bicycle', 'public', 'car'
-    start_lat=35.83,         # 선택: 시작 위도
-    start_lon=129.21         # 선택: 시작 경도
+    departure_category='PRESET',
+    departure_place_id='GYEONGJU_STATION'
 )
 ```
 

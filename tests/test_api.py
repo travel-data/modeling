@@ -9,8 +9,8 @@ VALID_REQUEST = {
     "travelCompanion": "PARTNER",
     "preferredTravelTheme": "NATURE_SCENERY",
     "transportationMode": "CAR",
-    "latitude": 35.8562,
-    "longitude": 129.2247,
+    "departureCategory": "PRESET",
+    "departurePlaceId": "GYEONGJU_STATION",
 }
 
 
@@ -85,9 +85,9 @@ def test_theme_can_be_null_to_match_frontend_preference_contract():
     assert response.status_code == 200
 
 
-def test_coordinates_must_be_provided_as_a_pair():
+def test_departure_reference_must_be_provided_as_a_pair():
     app = create_app(recommendation_service=FakeRecommendationService())
-    request = {**VALID_REQUEST, "longitude": None}
+    request = {**VALID_REQUEST, "departurePlaceId": None}
 
     with TestClient(app) as client:
         response = client.post(

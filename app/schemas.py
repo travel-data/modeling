@@ -40,6 +40,12 @@ class TransportationMode(str, Enum):
     CAR = "CAR"
 
 
+class DepartureCategory(str, Enum):
+    PRESET = "PRESET"
+    TOUR_SPOT = "TOUR_SPOT"
+    ACCOMMODATION = "ACCOMMODATION"
+
+
 class CourseRecommendationRequest(ApiModel):
     travel_time: TravelTime = Field(alias="travelTime")
     travel_companion: TravelCompanion = Field(alias="travelCompanion")
@@ -64,13 +70,21 @@ class CourseRecommendationRequest(ApiModel):
         default_factory=list,
         alias="activeFestivalSpotIds",
     )
-    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
-    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    departure_category: Optional[DepartureCategory] = Field(
+        default=None,
+        alias="departureCategory",
+    )
+    departure_place_id: Optional[str] = Field(
+        default=None,
+        alias="departurePlaceId",
+    )
 
     @model_validator(mode="after")
-    def validate_start_coordinates(self) -> "CourseRecommendationRequest":
-        if (self.latitude is None) != (self.longitude is None):
-            raise ValueError("latitude and longitude must be provided together.")
+    def validate_departure_reference(self) -> "CourseRecommendationRequest":
+        if (self.departure_category is None) != (self.departure_place_id is None):
+            raise ValueError(
+                "departureCategory and departurePlaceId must be provided together.",
+            )
         return self
 
 

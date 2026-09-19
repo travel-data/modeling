@@ -94,8 +94,12 @@ class RecommendationService:
                     else "general"
                 ),
                 transport=TRANSPORT_MAP[request.transportation_mode],
-                start_lat=request.latitude,
-                start_lon=request.longitude,
+                departure_category=(
+                    request.departure_category.value
+                    if request.departure_category is not None
+                    else None
+                ),
+                departure_place_id=request.departure_place_id,
                 travel_start_date=request.travel_start_date,
                 saved_spot_ids=set(request.saved_spot_ids),
                 saved_nearby_place_ids=set(request.saved_nearby_place_ids),
